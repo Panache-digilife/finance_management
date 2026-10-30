@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reports | Finance Management System</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="chart.umd.js"></script>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo">📊 Finance<span>MS</span></div>
+        <div class="menu">
+            <a href="dashboard.html">Dashboard</a>
+            <a href="entry.html">Add / Edit Entry</a>
+            <a href="reports.html" class="active">Reports</a>
+        </div>
+        <div class="sidebar-footer">Data source: GitHub repo Excel file</div>
+    </div>
+
+    <div class="main">
+        <div class="header">
+            <h1>Financial Reports</h1>
+            <div class="header-actions">
+                <a class="btn-download" href="#" id="downloadBtn">⬇ Download Excel</a>
+                <div class="profile" id="profileName">—</div>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <h2>Quarterly Trend</h2>
+            </div>
+            <div style="position:relative; height:280px;">
+                <canvas id="trendChart"></canvas>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-header">
+                <h2>Select Fiscal Year</h2>
+                <select id="fySelect" style="width:160px;"></select>
+            </div>
+            <div class="tabs">
+                <div class="tab active" data-mode="amount">Amounts</div>
+                <div class="tab" data-mode="qoq">QoQ % Growth</div>
+                <div class="tab" data-mode="yoy">YoY % Growth</div>
+            </div>
+            <div class="table-scroll">
+                <table id="reportTable">
+                    <thead><tr><th>Particular</th></tr></thead>
+                    <tbody><tr><td class="no-data">Select a fiscal year to view its report.</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        requireLogin();
+        document.getElementById("profileName").textContent = localStorage.getItem("userName");
+        document.getElementById("downloadBtn").href = "/api/download";
+
+        let currentReport = null;
+        let mode = "amount";
+        let trendChart = null;
+
+        const CHART_ROWS = ["Total Income", "Total Expenses", "Profit After Tax"];
+        const CHART_COLORS = {
+            "Total Income": "#2563eb",
+            "Total Expenses": "#f59e0b",
+            "Profit After Tax": "#15803d",
+        };
+
+        function waitForChart(timeoutMs = 4000) {
+            return new Promise((resolve, reject) => {
+                if (typeof Chart !== "undefined") return resolve();
+                const start = Date.now();
+                const iv = setInterval(() => {
+                    if (typeof Chart !== "undefined") {
+                        clearInterval(iv);
+                        resolve();
+                    } else if (Date.now() - start > timeoutMs) {
+                        clearInterval(iv);
+                        reject(new Error("Chart.js failed to load from any CDN (check network/ad-blocker/CSP)."));
+                    }
+                }, 100);
+            });
+        }
+
+        async function renderChart() {
+            const canvas = document.getElementById("trendChart");
+            if (!currentReport || !currentReport.line_items.length) {
+                if (trendChart) { trendChart.destroy(); trendChart = null; }
+                return;
+            }
+            try {
+                await waitForChart();
+            } catch (e) {
+                console.error("Reports chart failed:", e);
+                return;
+            }
+            const quarterCols = currentReport.columns.filter(c => ["Q1", "Q2", "Q3", "Q4"].includes(c));
+            const datasets = CHART_ROWS.map(name => {
+                const li = currentReport.line_items.find(li => li.particular === name);
+                return {
+                    label: name,
+                    data: quarterCols.map(c => (li ? li.values[c] : 0) || 0),
+                    backgroundColor: CHART_COLORS[name],
+                    borderRadius: 4,
+                };
+            }).filter(ds => ds.data.some(v => v !== 0));
+
+            if (trendChart) trendChart.destroy();
+            trendChart = new Chart(canvas.getContext("2d"), {
+                type: "bar",
+                data: { labels: quarterCols, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: "bottom" } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { callback: v => fmtMoney(v) } },
+                    },
+                },
+            });
+        }
+
+        function renderTable() {
+            const table = document.getElementById("reportTable");
+            if (!currentReport || !currentReport.line_items.length) {
+                table.querySelector("thead").innerHTML = "<tr><th>Particular</th></tr>";
+                table.querySelector("tbody").innerHTML = `<tr><td class="no-data">No data for this fiscal year yet.</td></tr>`;
+                return;
+            }
+            const cols = currentReport.columns;
+            let thead = "<tr><th>Particular</th>";
+            cols.forEach(c => thead += `<th class="num">${c}</th>`);
+            thead += "</tr>";
+            table.querySelector("thead").innerHTML = thead;
+
+            let body = "";
+            currentReport.line_items.forEach(li => {
+                const isComputed = li.category === "Computed";
+                const highlight = ["Total Income", "Profit After Tax"].includes(li.particular);
+                body += `<tr class="${isComputed ? "computed-row" : ""} ${highlight ? "highlight" : ""}"><td>${li.particular}</td>`;
+                cols.forEach(c => {
+                    if (mode === "amount") {
+                        const val = li.particular.includes("Margin") ? li.values[c].toFixed(1) + "%" : fmtMoney(li.values[c]);
+                        body += `<td class="num">${val}</td>`;
+                    } else {
+                        const g = (currentReport.growth[li.particular] || {})[c];
+                        const val = g ? g[mode] : null;
+                        // growth only meaningful for quarter columns, not cumulative ones
+                        body += `<td class="num">${["Q1","Q2","Q3","Q4"].includes(c) ? growthPill(val) : "—"}</td>`;
+                    }
+                });
+                body += "</tr>";
+            });
+            table.querySelector("tbody").innerHTML = body;
+        }
+
+        document.querySelectorAll(".tab").forEach(tab => {
+            tab.addEventListener("click", () => {
+                document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+                tab.classList.add("active");
+                mode = tab.dataset.mode;
+                renderTable();
+            });
+        });
+
+        async function loadReport(fy) {
+            try {
+                currentReport = await apiGet(`/api/report/${fy}`);
+                renderTable();
+                renderChart();
+            } catch (e) {
+                showToast("Could not load report: " + e.message);
+            }
+        }
+
+        document.getElementById("fySelect").addEventListener("change", (e) => loadReport(e.target.value));
+
+        (async () => {
+            try {
+                const data = await apiGet("/api/years");
+                const sel = document.getElementById("fySelect");
+                if (!data.years.length) {
+                    sel.innerHTML = `<option>No data yet</option>`;
+                    return;
+                }
+                sel.innerHTML = data.years.map(y => `<option value="${y}">FY ${y}</option>`).join("");
+                loadReport(data.years[0]);
+            } catch (e) {
+                showToast("Could not load fiscal years: " + e.message);
+            }
+        })();
+    </script>
+</body>
+</html>

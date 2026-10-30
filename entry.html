@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Accounting Assistant | Finance Management System</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* Additive styles only - your existing style.css is untouched. */
+        .chat-shell { display:flex; flex-direction:column; height:520px; border:1px solid #e5e7eb; border-radius:12px; background:#fff; overflow:hidden; }
+        .chat-log { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
+        .chat-row { display:flex; }
+        .chat-row.user { justify-content:flex-end; }
+        .chat-bubble { max-width:72%; padding:10px 14px; border-radius:14px; font-size:14px; line-height:1.5; white-space:pre-wrap; }
+        .chat-row.user .chat-bubble { background:#2563eb; color:#fff; border-bottom-right-radius:4px; }
+        .chat-row.ai .chat-bubble { background:#f3f4f6; color:#111827; border-bottom-left-radius:4px; }
+        .chat-status { display:inline-block; margin-top:6px; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; }
+        .chat-status.applied { background:#dcfce7; color:#15803d; }
+        .chat-status.rejected { background:#fee2e2; color:#b91c1c; }
+        .chat-status.confirm { background:#fef3c7; color:#92400e; }
+        .chat-input-row { display:flex; gap:10px; padding:14px; border-top:1px solid #e5e7eb; background:#fafafa; }
+        .chat-input-row textarea { flex:1; resize:none; border:1px solid #d1d5db; border-radius:10px; padding:10px 12px; font-size:14px; font-family:inherit; height:44px; }
+        .chat-entry-detail { font-size:12px; color:#4b5563; margin-top:4px; }
+        .period-bar { display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap; }
+        .period-bar > div { display:flex; flex-direction:column; gap:4px; }
+        .period-bar select { padding:8px 10px; border-radius:8px; border:1px solid #d1d5db; }
+        .example-hints { font-size:12px; color:#6b7280; margin-top:8px; }
+        .example-hints code { background:#f3f4f6; padding:1px 5px; border-radius:4px; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo">📊 Finance<span>MS</span></div>
+        <div class="menu">
+            <a href="dashboard.html">Dashboard</a>
+            <a href="entry.html" class="active">AI Accounting Assistant</a>
+            <a href="reports.html">Reports</a>
+        </div>
+        <div class="sidebar-footer">Data source: GitHub repo Excel file<br>Template: AI_Financial_Report_Template.xlsx</div>
+    </div>
+
+    <div class="main">
+        <div class="header">
+            <h1>AI Accounting Assistant</h1>
+            <div class="header-actions">
+                <div class="profile" id="profileName">—</div>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-header"><h2>Period</h2></div>
+            <div class="period-bar">
+                <div>
+                    <label>Fiscal Year</label>
+                    <select id="fiscalYear"></select>
+                </div>
+                <div>
+                    <label>Quarter</label>
+                    <select id="quarter">
+                        <option value="Q1">Q1</option>
+                        <option value="Q2">Q2</option>
+                        <option value="Q3">Q3</option>
+                        <option value="Q4">Q4</option>
+                    </select>
+                </div>
+                <div>
+                    <button type="button" class="btn-secondary" id="undoBtn">↺ Undo Last Transaction</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-header"><h2>Describe a transaction</h2></div>
+            <div class="chat-shell">
+                <div class="chat-log" id="chatLog"></div>
+                <div class="chat-input-row">
+                    <textarea id="chatInput" placeholder="e.g. Purchased 5 Dell laptops for ₹50,000"></textarea>
+                    <button type="button" class="btn-primary" id="sendBtn">Submit</button>
+                </div>
+            </div>
+            <p class="example-hints">
+                Try: <code>Paid salaries ₹3,20,000</code> &nbsp;·&nbsp;
+                <code>Received interest ₹12,000</code> &nbsp;·&nbsp;
+                <code>Purchased raw materials ₹8 lakh</code> &nbsp;·&nbsp;
+                <code>Sold finished goods ₹15 lakh</code>
+            </p>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        const userName = requireLogin();
+        document.getElementById("profileName").textContent = userName;
+
+        function populateYears() {
+            const sel = document.getElementById("fiscalYear");
+            const current = new Date().getFullYear();
+            sel.innerHTML = "";
+            for (let y = current + 1; y >= current - 5; y--) {
+                const opt = document.createElement("option");
+                opt.value = y; opt.textContent = "FY " + y;
+                sel.appendChild(opt);
+            }
+        }
+
+        function periodKey() {
+            return `chat_history_${document.getElementById("fiscalYear").value}_${document.getElementById("quarter").value}`;
+        }
+
+        function loadHistory() {
+            const raw = localStorage.getItem(periodKey());
+            const log = document.getElementById("chatLog");
+            log.innerHTML = "";
+            if (!raw) return;
+            JSON.parse(raw).forEach(renderMessage);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function saveHistory(entry) {
+            const raw = localStorage.getItem(periodKey());
+            const list = raw ? JSON.parse(raw) : [];
+            list.push(entry);
+            localStorage.setItem(periodKey(), JSON.stringify(list));
+        }
+
+        function renderMessage({ role, text, status, detail }) {
+            const log = document.getElementById("chatLog");
+            const row = document.createElement("div");
+            row.className = "chat-row " + role;
+            const statusClass = status === "Applied" ? "applied" : status === "Rejected" ? "rejected" : status ? "confirm" : "";
+            row.innerHTML = `
+                <div>
+                    <div class="chat-bubble">${text}</div>
+                    ${status ? `<div class="chat-status ${statusClass}">${status}</div>` : ""}
+                    ${detail ? `<div class="chat-entry-detail">${detail}</div>` : ""}
+                </div>`;
+            log.appendChild(row);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById("chatInput");
+            const text = input.value.trim();
+            if (!text) return;
+            const fiscal_year = parseInt(document.getElementById("fiscalYear").value);
+            const quarter = document.getElementById("quarter").value;
+
+            const userMsg = { role: "user", text };
+            renderMessage(userMsg);
+            saveHistory(userMsg);
+            input.value = "";
+
+            try {
+                const res = await apiPost("/api/chat", { fiscal_year, quarter, message: text, entered_by: userName });
+                let status, detail;
+                if (res.success) {
+                    status = "Applied";
+                    detail = res.entries.map(e =>
+                        `${e.sheet} → ${e.line_item}: ${e.operation === "add" ? "+" : "−"}${fmtMoney(e.amount)} (new balance ${fmtMoney(e.new_balance)})`
+                    ).join("<br>");
+                } else if (res.needs_confirmation) {
+                    status = "Needs confirmation";
+                } else {
+                    status = "Rejected";
+                }
+                const aiMsg = { role: "ai", text: res.message || "Done.", status, detail };
+                renderMessage(aiMsg);
+                saveHistory(aiMsg);
+            } catch (err) {
+                const aiMsg = { role: "ai", text: "Error: " + err.message, status: "Rejected" };
+                renderMessage(aiMsg);
+                saveHistory(aiMsg);
+            }
+        }
+
+        document.getElementById("sendBtn").addEventListener("click", sendMessage);
+        document.getElementById("chatInput").addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+        });
+
+        document.getElementById("undoBtn").addEventListener("click", async () => {
+            const fiscal_year = parseInt(document.getElementById("fiscalYear").value);
+            const quarter = document.getElementById("quarter").value;
+            try {
+                const res = await apiPost("/api/undo", { fiscal_year, quarter });
+                const msg = { role: "ai", text: `Reversed: ${res.reversed.statement} → ${res.reversed.line_item} (${fmtMoney(res.reversed.amount)})`, status: "Applied" };
+                renderMessage(msg);
+                saveHistory(msg);
+            } catch (err) {
+                showToast("Undo failed: " + err.message);
+            }
+        });
+
+        document.getElementById("fiscalYear").addEventListener("change", loadHistory);
+        document.getElementById("quarter").addEventListener("change", loadHistory);
+
+        (function init() {
+            populateYears();
+            loadHistory();
+        })();
+    </script>
+</body>
+</html>
